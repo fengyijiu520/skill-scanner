@@ -1,0 +1,926 @@
+version: "2.0"
+
+# 准入评估阈值
+thresholds:
+  auto_approve: 85   # ≥85分：低风险，自动准入
+  manual_review: 60  # 60-84分：中低风险，需人工审核
+  block: 0          # <60分：高风险，禁止准入
+
+# ========== P0 阻断层（一票否决）==========
+p0_rules:
+  - id: "P0-001"
+    name: "知识产权与许可证合规"
+    description: "检测是否存在代码抄袭、违反开源协议（特别是GPL/AGPL传染性协议）"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "semantic"
+      method: "license_compliance"
+    block_conditions:
+      - "copy_paste_detected"
+      - "gpl_violation"
+      - "agpl_violation"
+    on_fail:
+      action: "block"
+      reason: "知识产权与许可证合规检测未通过"
+
+  - id: "P0-002"
+    name: "恶意代码模式检测"
+    description: "检测是否包含系统破坏、反弹Shell、挖矿、勒索等高风险主动恶意操作"
+    layer: "P0"
+    severity: "critical"
+    whitelist_patterns:
+      - "(?i)(^|/)tests?/"
+      - "(?i)(vite|webpack|devserver|development).*(0\\.0\\.0\\.0)"
+      - "(?i)(0\\.0\\.0\\.0).*(vite|webpack|devserver|development)"
+    whitelist_context_patterns:
+      - "(?is)(vite\\.config|webpack\\.config|devserver|server\\s*:\\s*\\{).*(0\\.0\\.0\\.0)"
+      - "(?is)(0\\.0\\.0\\.0).*(vite\\.config|webpack\\.config|devserver|server\\s*:\\s*\\{)"
+    whitelist_deny_patterns:
+      - "rm\\s+-rf\\s+/"
+      - "exec\\.Command\\(\\\"rm\\\",\\s*\\\"-rf\\\",\\s*\\\"/\\\"\\)"
+      - "dd\\s+if=/dev/zero"
+      - "nc\\s+-e\\s+/bin/sh"
+      - "bash\\s+-i\\s+>&\\s+/dev/tcp"
+      - "EncryptFile.*ransom"
+      - "ptrace\\(PTRACE_ATTACH"
+      - "unshare\\(CLONE_NEWUSER"
+      - "capset\\("
+      - "/proc/self/ns"
+      - "seccomp"
+    detection:
+      type: "pattern"
+      patterns:
+        # 真正的恶意命令
+        - "rm\\s+-rf\\s+/"
+        - "dd\\s+if=/dev/zero"
+        - "nc\\s+-e\\s+/bin/sh"
+        - "bash\\s+-i\\s+>&\\s+/dev/tcp"
+        - "stratum\\+tcp://"
+        - "EncryptFile.*ransom"
+        - "ptrace\\(PTRACE_ATTACH"
+        - "unshare\\(CLONE_NEWUSER"
+        - "capset\\("
+        - "/proc/self/ns"
+        - "seccomp"
+        # 通用危险函数调用
+        - "os\\.system"
+        - "subprocess\\."
+        - "exec\\.Command"
+        - "child_process"
+        - "eval\\("
+        - "exec\\("
+        - "__import__\\('os'\\)"
+        # 挖矿相关
+        - "stratum\\+tcp://"
+        - "miner\\.start"
+        - "pool\\.mine"
+    on_fail:
+      action: "block"
+      reason: "检测到恶意代码模式"
+    block_conditions:
+      - "malicious_pattern_detected"
+
+  - id: "P0-003"
+    name: "后门与条件触发逻辑"
+    description: "检测是否存在特定输入、时间或条件触发的隐藏恶意后门"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "pattern"
+      patterns:
+        # 简单后门模式
+        - "if\\s*\\(\\s*input\\s*==\\s*['\"]backdoor['\"]"
+        - "if\\s*\\(\\s*arg\\s*==\\s*['\"]backdoor['\"]"
+        - "backdoor\\s*\\("
+        # 条件触发
+        - "time\\.sleep.*while"
+        - "schedule\\."
+        - "cron\\."
+        # 编码后门
+        - "base64.*decode.*exec"
+        - "eval\\(.*base64"
+    on_fail:
+      action: "block"
+      reason: "检测到后门触发逻辑"
+    block_conditions:
+      - "backdoor_trigger_detected"
+
+  - id: "P0-004"
+    name: "敏感数据外发与隐蔽通道"
+    description: "检测是否收集环境变量、密钥外传，或利用DNS/ICMP等隐蔽通道外泄数据"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "function"
+      function: "detectDataExfiltration"
+      patterns:
+        # DNS外带
+        - "socket\\.gethostbyname"
+        - "dns\\.query"
+        - "nslookup"
+        # ICMP外带
+        - "socket\\.IPPROTO_ICMP"
+        - "ICMP"
+        # 环境变量外传
+        - "os\\.environ.*requests\\."
+        - "os\\.getenv.*post"
+        - "\\.send.*environ"
+    on_fail:
+      action: "block"
+      reason: "检测到敏感数据外发或隐蔽通道"
+    block_conditions:
+      - "data_exfiltration_detected"
+      - "dns_exfiltration_detected"
+      - "icmp_exfiltration_detected"
+    compensation: false
+
+  - id: "P0-005"
+    name: "硬编码凭证检测"
+    description: "检测代码中是否存在明文Token、Password、AK/SK等硬编码凭证"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "function"
+      function: "detectHardcodedCredential"
+    on_fail:
+      action: "block"
+      reason: "检测到硬编码凭证"
+    block_conditions:
+      - "hardcoded_token_detected"
+      - "hardcoded_password_detected"
+      - "hardcoded_ak_sk_detected"
+    compensation: false
+
+  - id: "P0-006"
+    name: "能力声明欺骗性检测"
+    description: "检测技能声明与实现是否存在严重偏差，是否隐藏未声明的高风险功能"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "semantic"
+      method: "capability_deception"
+      threshold_low: 0.5
+      threshold_high: 0.75
+    on_fail:
+      action: "block"
+      reason: "能力声明严重偏离实际功能"
+    block_conditions:
+      - "capability_deception_detected"
+      - "hidden_high_risk_function"
+    compensation: false
+
+  - id: "P0-007"
+    name: "MCP工具滥用与投毒"
+    description: "检测是否诱导Agent滥用高风险MCP工具、劫持MCP服务器，或篡改工具描述投毒"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "function"
+      function: "detectMCPAbuse"
+      patterns:
+        # 高风险MCP工具调用
+        - "mcp\\..*admin"
+        - "mcp\\..*delete"
+        - "mcp\\..*exec"
+        - "mcp\\..*root"
+        # 工具描述篡改
+        - "override.*tool.*description"
+        - "poison.*tool"
+    on_fail:
+      action: "block"
+      reason: "检测到MCP工具滥用或投毒"
+    block_conditions:
+      - "mcp_abuse_detected"
+      - "mcp_poisoning_detected"
+    compensation: false
+
+  - id: "P0-008"
+    name: "沙箱逃逸与提权风险"
+    description: "检测是否包含突破沙箱、访问宿主机资源，或ptrace/mount等危险系统调用"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "pattern"
+      patterns:
+        - "ptrace\\(PTRACE_ATTACH"
+        - "unshare\\(CLONE_NEWUSER"
+        - "capset\\("
+        - "/proc/self/ns"
+        - "seccomp"
+        - "mount\\("
+        - "umount\\("
+        - "chroot\\("
+        - "ptrace\\(PTRACE_TRACEME"
+    on_fail:
+      action: "block"
+      reason: "检测到沙箱逃逸或提权代码"
+    block_conditions:
+      - "sandbox_escape_attempt"
+      - "privilege_escalation"
+    compensation: false
+
+  - id: "P0-009"
+    name: "恶意C2通信检测"
+    description: "检测技能是否尝试连接已知的恶意C2域名、IP地址，或使用异常端口进行隐蔽通信"
+    layer: "P0"
+    severity: "critical"
+    detection:
+      type: "function"
+      function: "detectC2Communication"
+      patterns:
+        # 异常端口
+        - ":4444"
+        - ":5555"
+        - ":6666"
+        - ":1337"
+        # 常见C2特征
+        - "c2\\.malware"
+        - "beacon\\."
+        - "meterpreter"
+    on_fail:
+      action: "block"
+      reason: "检测到恶意C2通信"
+    block_conditions:
+      - "malicious_c2_detected"
+      - "suspicious_network_behavior"
+    compensation: false
+
+# ========== P1 核心层（权重扣分制）==========
+p1_rules:
+  - id: "P1-001"
+    name: "依赖组件高危漏洞检测"
+    description: "检测第三方依赖是否存在Critical/High级别CVE漏洞（CVSS≥7.0）"
+    layer: "P1"
+    weight: 16
+    severity: "critical"
+    detection:
+      type: "function"
+      function: "detectDependencyVulns"
+    block_conditions:
+      - "rce_with_no_fix"
+      - "typo_squatting"
+    deduct_score: 20
+    on_fail:
+      action: "deduct"
+      default_deduction: 20
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-002"
+    name: "动态指令注入风险"
+    description: "检测用户输入是否未经处理拼接到LLM Prompt、代码解释器、eval、exec、SQL、Shell等可执行上下文"
+    layer: "P1"
+    weight: 12
+    severity: "high"
+    detection:
+      type: "ast"
+      contexts:
+        - "eval"
+        - "exec"
+        - "sql"
+        - "shell"
+    block_conditions:
+      - "direct_concatenation_no_param"
+    deduct_score: 15
+    on_fail:
+      action: "deduct"
+      default_deduction: 15
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-003"
+    name: "权限声明与最小化原则"
+    description: "检测是否申请了远超功能所需的权限，读写权限是否分离"
+    layer: "P1"
+    weight: 9.6
+    severity: "high"
+    detection:
+      type: "function"
+      function: "evaluatePermissions"
+    block_conditions:
+      - "excessive_permissions"
+    deduct_score: 12
+    on_fail:
+      action: "deduct"
+      default_deduction: 12
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-004"
+    name: "路径遍历与文件越权"
+    description: "检测文件操作是否存在../路径穿越，导致越权读写系统敏感文件"
+    layer: "P1"
+    weight: 6.4
+    severity: "high"
+    detection:
+      type: "pattern"
+      patterns:
+        - "\\.\\.\\/ "
+        - "\\.\\.\\\\"
+        - "path traversal"
+        - "path_join.*\\.\\."
+    block_conditions:
+      - "path_traversal_detected"
+    deduct_score: 8
+    on_fail:
+      action: "deduct"
+      default_deduction: 8
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-005"
+    name: "SSRF与内网探测防护"
+    description: "检测对外部URL/IP的调用是否限制了内网地址、私有IP及DNS重绑定攻击"
+    layer: "P1"
+    weight: 6.4
+    severity: "high"
+    detection:
+      type: "pattern"
+      patterns:
+        - "allowed_domains"
+        - "url_whitelist"
+        - "validate_url"
+    block_conditions:
+      - "ssrf_vulnerable"
+      - "dns_rebinding"
+    deduct_score: 8
+    on_fail:
+      action: "deduct"
+      default_deduction: 8
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-006"
+    name: "工具响应投毒防护"
+    description: "检测是否对MCP/API响应内容进行清洗，防止响应中注入的恶意指令污染Agent上下文"
+    layer: "P1"
+    weight: 10
+    severity: "high"
+    detection:
+      type: "function"
+      function: "detectResponsePoisoning"
+    block_conditions:
+      - "no_response_sanitization"
+    deduct_score: 10
+    on_fail:
+      action: "deduct"
+      default_deduction: 10
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-007"
+    name: "凭据缓存与跨任务隔离"
+    description: "检测是否存在不当缓存用户凭据，或会话间权限、数据污染的问题"
+    layer: "P1"
+    weight: 4
+    severity: "medium"
+    detection:
+      type: "function"
+      function: "evaluateCredentialIsolation"
+    block_conditions:
+      - "plaintext_credential_cache"
+      - "cross_user_data_pollution"
+    deduct_score: 5
+    on_fail:
+      action: "deduct"
+      default_deduction: 5
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-008"
+    name: "敏感上下文泄露风险"
+    description: "检测是否将系统提示词、密钥、内部堆栈路径返回给用户"
+    layer: "P1"
+    weight: 4
+    severity: "medium"
+    detection:
+      type: "function"
+      function: "evaluateContextLeak"
+    block_conditions:
+      - "direct_context_leak"
+    deduct_score: 5
+    on_fail:
+      action: "deduct"
+      default_deduction: 5
+      no_compensation_block: false
+    compensation: false
+
+  - id: "P1-009"
+    name: "外部软依赖完整性校验"
+    description: "检测对外部Prompt模板、知识库、MCP工具描述的引用是否有哈希校验"
+    layer: "P1"
+    weight: 2.5
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "sha256\\("
+        - "hashlib\\."
+        - "integrity_check"
+        - "signature_verify"
+    deduct_score: 4
+    on_fail:
+      action: "deduct"
+      default_deduction: 4
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-010"
+    name: "不可逆操作审批机制"
+    description: "检测删除、支付、发送通知等高风险操作是否配置了人工确认步骤（Human-in-the-Loop）"
+    layer: "P1"
+    weight: 3
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "confirm\\s*\\("
+        - "approval\\s*required"
+        - "human_in_the_loop"
+        - "require_confirmation"
+    deduct_score: 4
+    on_fail:
+      action: "deduct"
+      default_deduction: 4
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-011"
+    name: "工具输入Schema校验"
+    description: "检测是否为所有工具接口定义了严格的类型、长度、格式校验"
+    layer: "P1"
+    weight: 1
+    severity: "low"
+    detection:
+      type: "function"
+      function: "detectInputSchemaValidation"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-012"
+    name: "闭源/黑盒技能行为审计"
+    description: "针对闭源技能，通过黑盒测试验证其行为是否与声明一致"
+    layer: "P1"
+    weight: 5
+    severity: "high"
+    detection:
+      type: "function"
+      function: "detectBlackBoxAnomalies"
+    block_conditions:
+      - "undeclared_network_connection"
+      - "undeclared_file_access"
+    deduct_score: 5
+    on_fail:
+      action: "deduct"
+      default_deduction: 5
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-013"
+    name: "日志安全审计能力"
+    description: "检测是否记录完整的操作日志，且日志中是否对敏感信息进行了脱敏"
+    layer: "P1"
+    weight: 1
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "logging\\."
+        - "log\\.info"
+        - "logger\\."
+        - "audit\\s*log"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-014"
+    name: "供应链SBOM完整性"
+    description: "检测是否提供完整可验证的软件物料清单（SBOM）"
+    layer: "P1"
+    weight: 4
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "sbom\\.json"
+        - "SPDX"
+        - "CycloneDX"
+        - "bom\\.xml"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-015"
+    name: "技能包数字签名验证"
+    description: "检测技能包是否具备可信的数字签名及哈希校验"
+    layer: "P1"
+    weight: 4
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "-----BEGIN PGP SIGNATURE-----"
+        - "-----BEGIN SIGNATURE-----"
+        - "\\.sig"
+        - "signing_key"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-016"
+    name: "依赖源可信度与锁定"
+    description: "检测依赖是否来自公司私有源或官方可信源，版本是否锁定"
+    layer: "P1"
+    weight: 1
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "pypi\\.org"
+        - "npm\\.js"
+        - "go\\.mod"
+        - "version\\s*=\\s*['\"]"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-017"
+    name: "发布者信誉评估"
+    description: "评估发布者历史是否有恶意记录或低质代码提交行为"
+    layer: "P1"
+    weight: 0.5
+    severity: "low"
+    detection:
+      type: "function"
+      function: "evaluatePublisherReputation"
+    deduct_score: 1
+    on_fail:
+      action: "deduct"
+      default_deduction: 1
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-018"
+    name: "红队对抗测试评估"
+    description: "针对高权限/核心技能进行模拟攻击渗透测试（附加测试，不计入百分制）"
+    layer: "P1"
+    weight: 0
+    severity: "critical"
+    detection:
+      type: "function"
+      function: "redTeamAssessment"
+    block_conditions:
+      - "red_team_failed"
+    on_fail:
+      action: "block"
+      reason: "红队对抗测试未通过"
+    compensation: false
+
+  - id: "P1-019"
+    name: "SSL/TLS证书校验检测"
+    description: "检测技能的网络请求是否跳过了SSL/TLS证书校验"
+    layer: "P1"
+    weight: 3
+    severity: "high"
+    detection:
+      type: "pattern"
+      patterns:
+        - "verify\\s*=\\s*False"
+        - "verify\\s*=\\s*false"
+        - "ssl\\s*=\\s*False"
+        - "tls\\s*=\\s*False"
+    block_conditions:
+      - "ssl_skip_in_production"
+    deduct_score: 3
+    on_fail:
+      action: "deduct"
+      default_deduction: 3
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-020"
+    name: "文件上传安全检测"
+    description: "检测技能的文件上传功能是否存在安全缺陷"
+    layer: "P1"
+    weight: 4
+    severity: "high"
+    detection:
+      type: "function"
+      function: "detectFileUploadVulnerabilities"
+    block_conditions:
+      - "no_file_type_check"
+      - "no_file_size_check"
+    deduct_score: 4
+    on_fail:
+      action: "deduct"
+      default_deduction: 4
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-021"
+    name: "隐私合规与数据最小化检测"
+    description: "检测技能处理个人信息是否符合《个人信息保护法》等合规要求"
+    layer: "P1"
+    weight: 5
+    severity: "high"
+    detection:
+      type: "function"
+      function: "detectPrivacyCompliance"
+    block_conditions:
+      - "excessive_data_collection"
+    deduct_score: 5
+    on_fail:
+      action: "deduct"
+      default_deduction: 5
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-022"
+    name: "LLM提示词注入防护检测"
+    description: "检测技能在调用大模型时，是否对用户输入进行了有效隔离与清洗"
+    layer: "P1"
+    weight: 5
+    severity: "high"
+    detection:
+      type: "function"
+      function: "detectPromptInjectionProtection"
+    block_conditions:
+      - "no_input_sanitization"
+    deduct_score: 5
+    on_fail:
+      action: "deduct"
+      default_deduction: 5
+      no_compensation_block: true
+    compensation: true
+
+  - id: "P1-023"
+    name: "内容安全与输出审核检测"
+    description: "检测技能是否对输出内容进行了安全审核"
+    layer: "P1"
+    weight: 1.5
+    severity: "medium"
+    detection:
+      type: "function"
+      function: "detectContentSafety"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-024"
+    name: "自动更新机制安全检测"
+    description: "检测技能的自动更新机制是否对更新包进行了签名校验"
+    layer: "P1"
+    weight: 0.5
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "auto_update"
+        - "self_update"
+        - "update_check"
+    deduct_score: 1
+    on_fail:
+      action: "deduct"
+      default_deduction: 1
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-025"
+    name: "非确定性输入数据泄露风险"
+    description: "检测技能是否将随机数、时间戳等非确定性数据作为密钥种子"
+    layer: "P1"
+    weight: 3
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "random\\.seed"
+        - "Math\\.random"
+        - "time\\.now.*key"
+    deduct_score: 3
+    on_fail:
+      action: "deduct"
+      default_deduction: 3
+      no_compensation_block: false
+    compensation: true
+
+  - id: "P1-026"
+    name: "调试/测试后门残留检测"
+    description: "检测生产代码中是否残留仅供开发调试使用的特权接口"
+    layer: "P1"
+    weight: 2
+    severity: "medium"
+    detection:
+      type: "pattern"
+      patterns:
+        - "/debug/"
+        - "/test/"
+        - "/admin.*endpoint"
+        - "debug\\s*=\\s*True"
+    deduct_score: 2
+    on_fail:
+      action: "deduct"
+      default_deduction: 2
+      no_compensation_block: false
+    compensation: false
+
+# ========== P2 加固层（整改后放行）==========
+p2_rules:
+  - id: "P2-001"
+    name: "隐藏风险内容检测"
+    description: "检测是否利用Unicode混淆、隐写术隐藏恶意指令"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "\\\\u[0-9a-fA-F]{4}"
+        - "\\\\x[0-9a-fA-F]{2}"
+        - "零宽字符"
+        - "zero-width"
+    remediation: "MUST_CLEANSE"
+    on_fail:
+      action: "remediation"
+      reason: "发现Unicode混淆或隐写术，需清理"
+
+  - id: "P2-002"
+    name: "资源耗尽与DoS防护"
+    description: "检测是否存在无限循环、内存炸弹、未限制的并发调用"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "function"
+      function: "detectResourceExhaustion"
+      patterns:
+        - "while\\s*True"
+        - "for\\s*.*in\\s*range\\(999999"
+        - "ThreadPoolExecutor.*max_workers\\s*=\\s*None"
+    remediation: "MUST_ADD_RESOURCE_LIMIT"
+    on_fail:
+      action: "remediation"
+      reason: "发现资源耗尽风险，需增加Quota限制"
+
+  - id: "P2-003"
+    name: "长期记忆污染隔离"
+    description: "检测是否将不可信的用户输入直接写入了长期记忆/知识库"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "memory\\.write"
+        - "knowledge_base\\.add"
+        - "vector_store"
+    remediation: "MUST_IMPLEMENT_MEMORY_PARTITION"
+    on_fail:
+      action: "remediation"
+      reason: "发现记忆污染风险，需实现记忆分区"
+
+  - id: "P2-004"
+    name: "依赖安全更新订阅检测"
+    description: "检测技能作者是否订阅了依赖组件的安全更新通知"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "dependabot"
+        - "renovate"
+        - "snyk"
+        - "security.*update"
+    remediation: "MUST_SUBSCRIBE_SECURITY_UPDATES"
+    on_fail:
+      action: "remediation"
+      reason: "未订阅安全更新，需配置依赖安全更新提醒"
+
+  - id: "P2-005"
+    name: "漏洞披露机制检测"
+    description: "检测技能是否提供了漏洞披露联系方式"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "security\\.md"
+        - "SECURITY\\.md"
+        - "vulnerability\\.md"
+        - "security@"
+    remediation: "MUST_PROVIDE_VULNERABILITY_CONTACT"
+    on_fail:
+      action: "remediation"
+      reason: "未提供漏洞披露联系方式，需补充"
+
+  - id: "P2-006"
+    name: "技能描述高危词汇诱骗检测"
+    description: "检测技能名称或描述是否包含诱导性词汇"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "pattern"
+      patterns:
+        - "破解版"
+        - "无限试用"
+        - "免费VIP"
+        - "0day"
+        - "crack"
+        - "keygen"
+    remediation: "MUST_REMOVE_DECEPTIVE_KEYWORDS"
+    on_fail:
+      action: "remediation"
+      reason: "发现诱导性词汇，需修改技能描述"
+
+  - id: "P2-007"
+    name: "模型文件安全扫描"
+    description: "检测技能包内的模型文件是否包含恶意序列化指令"
+    layer: "P2"
+    severity: "low"
+    detection:
+      type: "function"
+      function: "detectMaliciousModelSerialization"
+      patterns:
+        - "pickle\\.load"
+        - "marshal\\.loads"
+        - "\\.joblib"
+    remediation: "MUST_USE_SAFE_SERIALIZATION"
+    on_fail:
+      action: "remediation"
+      reason: "发现不安全的模型序列化，需使用安全格式"
+
+# ========== 能力融合配置（保持向后兼容）==========
+capability_fusion:
+  enabled: true
+  score_base: 100
+  score_fusion:
+    base_weight: 0.65
+    capability_weight: 0.35
+  match_bonus: 4
+  overreach_multiplier: 18
+  underdeclare_penalty: 9
+  block_on_overreach:
+    - "code_exec"
+    - "secret_access"
+  thresholds:
+    critical: 80
+    high: 60
+    medium: 35
+  capabilities:
+    - id: "file_read"
+      display_name: "文件读取"
+      risk_category: "数据访问"
+      weight: 1.0
+      declared_keywords: ["read", "读取", "文件读取"]
+      observed_keywords: ["os.readfile", "readfile(", "open("]
+      noise_keywords: ["readme", "reader"]
+      finding_keywords: ["读取", "read"]
+    - id: "file_write"
+      display_name: "文件写入"
+      risk_category: "数据改写"
+      weight: 1.2
+      declared_keywords: ["write", "写入", "文件写入"]
+      observed_keywords: ["os.writefile", "os.create(", "writefile("]
+      noise_keywords: ["writer", "rewrite"]
+      finding_keywords: ["写入", "write"]
+    - id: "net_outbound"
+      display_name: "网络外联"
+      risk_category: "数据外发"
+      weight: 1.8
+      declared_keywords: ["network", "网络", "http", "api"]
+      observed_keywords: ["http.get", "http.post", "fetch(", "requests.", "net.dial"]
+      noise_keywords: ["httpserver", "api_docs"]
+      finding_keywords: ["数据外发", "network", "http"]
+    - id: "code_exec"
+      display_name: "代码执行"
+      risk_category: "执行控制"
+      weight: 2.4
+      declared_keywords: ["exec", "执行", "命令", "command"]
+      observed_keywords: ["exec.command", "os.system", "subprocess", "child_process", "eval("]
+      noise_keywords: ["example", "test_helper"]
+      finding_keywords: ["exec", "代码执行", "命令", "沙箱"]
+    - id: "secret_access"
+      display_name: "敏感凭据访问"
+      risk_category: "敏感信息处理"
+      weight: 2.6
+      declared_keywords: ["secret", "凭据", "密钥", "token"]
+      observed_keywords: ["token", "secret", "password", ".ssh"]
+      noise_keywords: ["secret_name", "tokenizer"]
+      finding_keywords: ["凭证", "secret", "token", "context"]

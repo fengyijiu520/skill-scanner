@@ -1,0 +1,50 @@
+[
+  {
+    "id": "sample-001",
+    "label_risk": true,
+    "base_score": 72,
+    "capability_score": 35
+  },
+  {
+    "id": "sample-002",
+    "label_risk": true,
+    "base_score": 58,
+    "capability_score": 40
+  },
+  {
+    "id": "sample-003",
+    "label_risk": false,
+    "base_score": 86,
+    "capability_score": 88
+  },
+  {
+    "id": "sample-004",
+    "label_risk": true,
+    "base_score": 77,
+    "capability_score": 45
+  },
+  {
+    "id": "sample-005",
+    "label_risk": false,
+    "base_score": 83,
+    "capability_score": 80
+  },
+  {
+    "id": "sample-006",
+    "label_risk": true,
+    "base_score": 64,
+    "capability_score": 38
+  },
+  {
+    "id": "sample-007",
+    "label_risk": false,
+    "base_score": 90,
+    "capability_score": 92
+  },
+  {
+    "id": "sample-008",
+    "label_risk": true,
+    "base_score": 74,
+    "capability_score": 33
+  }
+]

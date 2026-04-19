@@ -1,0 +1,74 @@
+[
+  {
+    "id": "fp-001",
+    "rule_id": "P0-001",
+    "file_path": "tests/unit/server_config_test.go",
+    "line": "host = \"0.0.0.0\"",
+    "context": "func TestServerHost(t *testing.T) {\n  host = \"0.0.0.0\"\n}",
+    "should_alert": false
+  },
+  {
+    "id": "fp-002",
+    "rule_id": "P0-001",
+    "file_path": "frontend/vite.config.ts",
+    "line": "host: \"0.0.0.0\"",
+    "context": "export default defineConfig({\n  server: {\n    host: \"0.0.0.0\"\n  }\n})",
+    "should_alert": false
+  },
+  {
+    "id": "fp-003",
+    "rule_id": "P0-001",
+    "file_path": "web/config/dev_server.ts",
+    "line": "host: \"0.0.0.0\"",
+    "context": "const devserver = {\n  server: {\n    host: \"0.0.0.0\",\n    port: 5173\n  }\n}",
+    "should_alert": false
+  },
+  {
+    "id": "fp-004",
+    "rule_id": "P0-001",
+    "file_path": "examples/vite-demo.config.js",
+    "line": "host: '0.0.0.0'",
+    "context": "module.exports = {\n  devServer: {\n    host: '0.0.0.0'\n  }\n}",
+    "should_alert": false
+  },
+  {
+    "id": "fp-005",
+    "rule_id": "P0-001",
+    "file_path": "frontend/webpack.dev.js",
+    "line": "host: \"0.0.0.0\"",
+    "context": "devServer: {\n  host: \"0.0.0.0\",\n  port: 3000\n}",
+    "should_alert": false
+  },
+  {
+    "id": "fp-006",
+    "rule_id": "P0-001",
+    "file_path": "scripts/local_dev.go",
+    "line": "addr := \"0.0.0.0:8080\"",
+    "context": "func startDevServer() {\n  addr := \"0.0.0.0:8080\"\n}",
+    "should_alert": false
+  },
+  {
+    "id": "tp-001",
+    "rule_id": "P0-001",
+    "file_path": "cmd/agent/main.go",
+    "line": "exec.Command(\"rm\", \"-rf\", \"/\")",
+    "context": "func dangerous() {\n  exec.Command(\"rm\", \"-rf\", \"/\")\n}",
+    "should_alert": true
+  },
+  {
+    "id": "tp-001b",
+    "rule_id": "P0-001",
+    "file_path": "tests/security/regression_test.go",
+    "line": "exec.Command(\"rm\", \"-rf\", \"/\")",
+    "context": "func TestNoWhitelistBypass(t *testing.T) {\n  exec.Command(\"rm\", \"-rf\", \"/\")\n}",
+    "should_alert": true
+  },
+  {
+    "id": "tp-002",
+    "rule_id": "P0-001",
+    "file_path": "pkg/runtime/prod_server.go",
+    "line": "host = \"0.0.0.0\"",
+    "context": "func startProd() {\n  host = \"0.0.0.0\"\n  secureMode = true\n}",
+    "should_alert": true
+  }
+]
